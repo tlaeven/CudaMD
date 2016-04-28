@@ -2,12 +2,12 @@
 #include <stdlib.h>
 #include <math.h>
 
-const int N = 108;
+const int N = 864;
 const int SIZE = N*3;
 const float h = 0.004;
 const float h2 = h/2;
 const float L = pow(N/0.8, 1.0/3.0);
-const int numBoxes = 2;
+const int numBoxes = 1;
 const int numBlocksAdd = SIZE;
 
 void read_v(float b[SIZE])
@@ -66,7 +66,7 @@ __global__ void calcForces_intrabox(float F[SIZE], float r[SIZE], int boxMembers
   int block_A = blockIdx.x;
   int k = threadIdx.x; // every thread does multiple particles
 
-  int N_par_thread = 4;
+  int N_par_thread = 27;
   float L = L_tears[0];
   
   int i = boxMembersFirstIndex[block_A];
@@ -142,7 +142,7 @@ __syncthreads(); // Make sure all boxes are filled
 
       }
     }
-    }
+  }
   __syncthreads();
 
   ///////////////
@@ -158,46 +158,76 @@ __syncthreads(); // Make sure all boxes are filled
       }
     }
 }
-__global__ void update_Boxpair(float F[SIZE], float r[SIZE], int boxMembers[N], int boxMembersFirstIndex[numBoxes+1])
-{
-  int block_A = blockIdx.x;
-  int block_B = blockIdx.x + 1; // horizontal example
+
+
+__global__ void calcForces_interbox(float F[SIZE], float r[SIZE], 
+  int boxMembers[N], int boxMembersFirstIndex[numBoxes+1],
+  float L_tears[1], int neighor[3]){
+
+  int block_A = blockIdx.x + blockIdx.y*blockDim.y + blockIdx.z*blockDim.z*blockDim.y;
+  int block_B = blockIdx.x+neighor[0]) + (blockIdx.y+neighor[1])*blockDim.y + (blockIdx.z+neighor[2])*blockDim.z*blockDim.y; // horizontal example
   int t = threadIdx.x; // every thread does 1 particle in 
 
-  float L = 5.129928;
+  int N_par_thread = 27;
+  float L = L_tears[0];
 
-
-  int l = 3*t; // particle number * 3 dimensions
-  int i = boxMembersFirstIndex[block_A + 1];
-  int j = boxMembersFirstIndex[block_B + 1];
+  int i = boxMembersFirstIndex[block_A];
+  int j = boxMembersFirstIndex[block_B];
 
   int N_A = boxMembersFirstIndex[block_A+1] - i;
   int N_B = boxMembersFirstIndex[block_B+1] - j;
+  
+  ///////////////
+  // SHARED MEMORY: PER BLOCK OF 32 THREADS(A WARP)
+  ///////////////
 
   extern __shared__ float shared[];
   float *r_boxA = &shared[0];
   int counter = 3*N_A;
-  float *r_boxB = &shared[counter];
-  counter += 3*N_B;
   float *F_boxA = &shared[counter];
   counter += 3*N_A;
+  
+  float *r_boxB = &shared[counter];
+  counter += 3*N_B;
   float *F_boxB = &shared[counter];
 
-   if (t<N_A){
-    // Fill artificial boxes with particle positions
-    for (int n = 0; n < 3; ++n){
-        r_boxA[l + n] = r[boxMembers[i+t] + n];
-        r_boxB[l + n] = r[boxMembers[j+t] + n];
+  ///////////////
+  // FILL TEMPORARY CONTAINER WITH PARTICLE POSITIONS
+  ///////////////
+
+  for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t){
+    if (t<N_A){  
+      int l = 3*t; // particle number * 3 dimensions
+      for (int n = 0; n < 3; ++n){
+          r_boxA[l + n] = r[3*boxMembers[i+t] + n];
+          r_boxB[l + n] = r[3*boxMembers[j+t] + n];
+      }
     }
+  }
     __syncthreads(); // Make sure all boxes are filled
 
+  ///////////////
+  // FOUNTAIN OF TEARS
+  ///////////////
 
-    // Calc force
-    float x_l = r_boxA[l];
-    float y_l = r_boxA[l+1];
-    float z_l = r_boxA[l+2];
-    for (int n = 0; n < N_B; ++n)
-    { 
+for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
+  {
+
+    if (t<N_A){
+      int l = 3*t; // particle number * 3 dimensions
+      // Fill artificial boxes with particle positions
+
+      // Calc force
+      float x_l = r_boxA[l];
+      float y_l = r_boxA[l+1];
+      float z_l = r_boxA[l+2];
+
+      for (int n = 0; n < N_B; ++n)
+      { 
+        if (n==t)
+        {
+          continue;
+        }
       int m = 3*n;
 
       float dx =  x_l - r_boxB[m];
@@ -209,33 +239,33 @@ __global__ void update_Boxpair(float F[SIZE], float r[SIZE], int boxMembers[N], 
 
       float R2 = dx*dx + dy*dy + dz*dz;
 
-
       float forceMagnitude = 48*pow(R2,-7) -24*pow(R2,-4);
       
       float fx = dx * forceMagnitude;
       F_boxA[l] += fx;
-      F_boxB[m] -= fx;
       
       float fy = dy * forceMagnitude;
       F_boxA[l+1] += fy;
-      F_boxB[m+1] -= fy;
 
       float fz = dz * forceMagnitude;
-      F_boxA[l+2] += fz;
-      F_boxB[m+2] -= fz;
-
+      F_boxA[l+2] += fz;}
     }
-
-
+  }
+ 
   __syncthreads(); // Make sure all forces have been filled
 
-    for (int n = 0; n < 3; ++n){
-      F[boxMembers[i+t] + n] += F_boxA[l + n];
-      F[boxMembers[j+t] + n] += F_boxB[l + n];
-  }
-  }
+  ///////////////
+  // REDISTRIBUTE FORCES INTO GLOBAL F
+  ///////////////
 
-
+  for(int t = N_par_thread*k; t < N_par_thread*(k+1); ++t){
+      if (t<N_A)
+      {
+      for (int n = 0; n < 3; ++n){
+        F[3*boxMembers[i+t] + n] += F_boxA[3*t + n];
+      }
+      }
+    }
 }
 
 
@@ -285,7 +315,7 @@ int main(void)
   {
     boxMembers[i] = i;
   }
-  int mbfi[numBoxes+1] = {0,54,N};
+  int mbfi[numBoxes+1] = {0,N};
 
   int* d_boxMembers;
   cudaMalloc(&d_boxMembers, N*sizeof(int));
@@ -295,9 +325,9 @@ int main(void)
   cudaMemcpy(d_mbfi, mbfi, (numBoxes+1)*sizeof(int),cudaMemcpyHostToDevice);
 
   // if random shit comes out, might be shared mem size
-  for (int b = 0; b < 1000; ++b)
+  for (int b = 0; b < 10; ++b)
   {
-    calcForces_intrabox<<<numBoxes, 28, SIZE*40>>>(d_F0, d_r0, d_boxMembers, d_mbfi, d_L);
+    calcForces_intrabox<<<numBoxes, 32, SIZE*4*2>>>(d_F0, d_r0, d_boxMembers, d_mbfi, d_L);
   }
     //test_F<<<N,3>>>(d_F0);
   cudaDeviceSynchronize();
