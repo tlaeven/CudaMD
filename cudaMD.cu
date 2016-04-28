@@ -6,7 +6,7 @@ const int N = 108;
 const int SIZE = N*3;
 const float h = 0.004;
 const float h2 = h/2;
-const float L = pow(N/0.8, 1/3);
+const float L = pow(N/0.8, 1.0/3.0);
 const int numBoxes = 1;
 const int numBlocksAdd = SIZE;
 
@@ -65,7 +65,7 @@ __global__ void calcForces_intrabox(float F[SIZE], float r[SIZE], int boxMembers
 {
   int block_A = blockIdx.x;
   int t = threadIdx.x; // every thread does 1 particle in 
-  float L = 1.2;
+  float L = 5.1299280;
   int l = 3*t; // particle number * 3 dimensions
   int i = boxMembersFirstIndex[block_A];
   int N_A = boxMembersFirstIndex[block_A + 1] - i;
@@ -87,8 +87,7 @@ __global__ void calcForces_intrabox(float F[SIZE], float r[SIZE], int boxMembers
     float x_l = r_boxA[l];
     float y_l = r_boxA[l+1];
     float z_l = r_boxA[l+2];
-    F[10] = N_A;
-    //F[11] = r[321];
+
     for (int n = t + 1; n < N_A; ++n)
     { 
       int m = 3*n;
@@ -101,22 +100,6 @@ __global__ void calcForces_intrabox(float F[SIZE], float r[SIZE], int boxMembers
       dz = dz - round(dz/L)*L;
 
       float R2 = dx*dx + dy*dy + dz*dz;
-      if(R2 < 0.5){
-        F[l] = dx;
-        F[l+1] = dy;
-        F[l+2] = dz;
-
-        F[l+3] = x_l;
-        F[l+4] = y_l;
-        F[l+5] = z_l;
-
-
-        F[l+6] = r_boxA[m];
-        F[l+7] = r_boxA[m+1];
-        F[l+8] = r_boxA[m+2];
-
-        F[l+9] = m;
-      }
 
   //     float forceMagnitude = 48*pow(R2,-7) -24*pow(R2,-4);
       
@@ -153,7 +136,7 @@ __global__ void update_Boxpair(float F[SIZE], float r[SIZE], int boxMembers[N], 
   int block_B = blockIdx.x + 1; // horizontal example
   int t = threadIdx.x; // every thread does 1 particle in 
 
-  float L = 1.2;
+  float L = 5.129928;
 
 
   int l = 3*t; // particle number * 3 dimensions
@@ -266,7 +249,7 @@ int main(void)
   // for(int i=0; i<100;++i){
 	 // velocity_verlet(d_F0, d_r0, d_v0);
   // }
-  printf("%f", L);
+
   int boxMembers[108];
   for (int i = 0; i < 108; ++i)
   {
@@ -282,7 +265,7 @@ int main(void)
   cudaMemcpy(d_mbfi, mbfi, 2*sizeof(int),cudaMemcpyHostToDevice);
 
   // if random shit comes out, might be shared mem size
-  calcForces_intrabox<<<numBoxes, 1, SIZE*40>>>(d_F0, d_r0, d_boxMembers, d_mbfi);
+  calcForces_intrabox<<<numBoxes, N, SIZE*40>>>(d_F0, d_r0, d_boxMembers, d_mbfi);
   //test_F<<<N,3>>>(d_F0);
   cudaDeviceSynchronize();
 	cudaMemcpy(vout, d_F0, SIZE*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
