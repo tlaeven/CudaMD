@@ -2,12 +2,13 @@
 #include <stdlib.h>
 #include <math.h>
 
-const int N = 864;
+# define NumBoxPerDim 1
+# define N 864;
 const int SIZE = N*3;
 const float h = 0.004;
 const float h2 = h/2;
 const float L = pow(N/0.8, 1.0/3.0);
-const int numBoxes = 1;
+const int numBoxes = pow(NumBoxPerDim,3);
 const int numBlocksAdd = SIZE;
 
 void read_v(float b[SIZE])
@@ -207,7 +208,7 @@ __global__ void calcForces_interbox(float F[SIZE], float r[SIZE],
     __syncthreads(); // Make sure all boxes are filled
 
   ///////////////
-  // FOUNTAIN OF TEARS
+  // FOUNTAIN OF TEARS BOX A
   ///////////////
 
 for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
@@ -224,10 +225,6 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
 
       for (int n = 0; n < N_B; ++n)
       { 
-        if (n==t)
-        {
-          continue;
-        }
       int m = 3*n;
 
       float dx =  x_l - r_boxB[m];
@@ -253,6 +250,50 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
   }
  
   __syncthreads(); // Make sure all forces have been filled
+ 
+  ///////////////
+  // FOUNTAIN OF TEARS BOX B
+  ///////////////
+
+for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
+  {
+
+    if (t<N_B){
+      int l = 3*t; // particle number * 3 dimensions
+      // Fill artificial boxes with particle positions
+
+      // Calc force
+      float x_l = r_boxB[l];
+      float y_l = r_boxB[l+1];
+      float z_l = r_boxB[l+2];
+
+      for (int n = 0; n < N_A; ++n)
+      { 
+      int m = 3*n;
+
+      float dx =  x_l - r_boxA[m];
+      dx = dx - round(dx/L)*L;
+      float dy =  y_l - r_boxA[m+1];
+      dy = dy - round(dy/L)*L;
+      float dz =  z_l - r_boxA[m+2];
+      dz = dz - round(dz/L)*L;
+
+      float R2 = dx*dx + dy*dy + dz*dz;
+
+      float forceMagnitude = 48*pow(R2,-7) -24*pow(R2,-4);
+      
+      float fx = dx * forceMagnitude;
+      F_boxB[l] += fx;
+      
+      float fy = dy * forceMagnitude;
+      F_boxB[l+1] += fy;
+
+      float fz = dz * forceMagnitude;
+      F_boxB[l+2] += fz;}
+    }
+  }
+ 
+  __syncthreads(); // Make sure all forces have been filled
 
   ///////////////
   // REDISTRIBUTE FORCES INTO GLOBAL F
@@ -263,11 +304,57 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
       {
       for (int n = 0; n < 3; ++n){
         F[3*boxMembers[i+t] + n] += F_boxA[3*t + n];
+        F[3*boxMembers[j+t] + n] += F_boxB[3*t + n];
       }
       }
     }
 }
 
+__global__ void updateBoxes(float r[SIZE], int boxMembers[N],
+ 							int boxMembersFirstIndex[numBoxes+1], float L_tears[1]){
+
+  int N_par_thread = ceil(N/warpSize);
+  int t = threadIdx.x;
+  float L = L_tears[0];
+  float boxWidth = L/NumBoxPerDim;
+
+  int N_box[numBoxes];
+  int r_boxIdx[N];
+  int boxPop[numBoxes];
+
+  for (int i = t*N_par_thread; i < (t+1)*N_par_thread; ++i)
+  {
+	  if (i<N)
+	  {
+		  int m = 3*i;
+		  r_boxIdx[i] = round(r[m]/boxWidth)) +
+		  					 numBoxes*round(r[m+1]/boxWidth))+
+		  					 	 numBoxes*numBoxes*round(r[m+2]/boxWidth));
+		  boxMembersFirstIndex[r_boxIdx[i]] += 1;
+	  }
+  }
+  __syncthreads();
+  
+  if (t==0) // Let single thread do cumsum
+  {
+  	for (int k = 0; k < numBoxes; ++k)
+  	{
+  		boxMembersFirstIndex[k+1] += boxMembersFirstIndex[k];
+  		boxPop[k] = boxMembersFirstIndex[k];
+  	}
+  }
+  __syncthreads();
+
+
+  for (int i = t*N_par_thread; i < (t+1)*N_par_thread; ++i)
+  {
+	  if (i<N)
+	  {
+		  boxMembers(boxPop[r_boxIdx[i]]) = i;
+		  boxPop[r_boxIdx[i]] += 1;
+	  }
+  }
+}
 
 void velocity_verlet(float F[SIZE], float r[SIZE], float v[SIZE])
 {
