@@ -2,14 +2,15 @@
 #include <stdlib.h>
 #include <math.h>
 
-# define NumBoxPerDim 1
-# define N 864;
+const int NumBoxPerDim = 1;
+const int N = 864;
 const int SIZE = N*3;
+const int numBoxes = NumBoxPerDim * NumBoxPerDim * NumBoxPerDim;
+const int numBlocksAdd = SIZE;
+
 const float h = 0.004;
 const float h2 = h/2;
 const float L = pow(N/0.8, 1.0/3.0);
-const int numBoxes = pow(NumBoxPerDim,3);
-const int numBlocksAdd = SIZE;
 
 void read_v(float b[SIZE])
 {	
@@ -166,8 +167,10 @@ __global__ void calcForces_interbox(float F[SIZE], float r[SIZE],
   float L_tears[1], int neighor[3]){
 
   int block_A = blockIdx.x + blockIdx.y*blockDim.y + blockIdx.z*blockDim.z*blockDim.y;
-  int block_B = blockIdx.x+neighor[0]) + (blockIdx.y+neighor[1])*blockDim.y + (blockIdx.z+neighor[2])*blockDim.z*blockDim.y; // horizontal example
-  int t = threadIdx.x; // every thread does 1 particle in 
+  int block_B = blockIdx.x + neighor[0] +
+  	 			(blockIdx.y+neighor[1])*blockDim.y +
+  	 			(blockIdx.z+neighor[2])*blockDim.z*blockDim.y; // horizontal example
+  int k = threadIdx.x; // every thread does 1 particle in 
 
   int N_par_thread = 27;
   float L = L_tears[0];
@@ -313,7 +316,7 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
 __global__ void updateBoxes(float r[SIZE], int boxMembers[N],
  							int boxMembersFirstIndex[numBoxes+1], float L_tears[1]){
 
-  int N_par_thread = ceil(N/warpSize);
+  int N_par_thread = N/warpSize;
   int t = threadIdx.x;
   float L = L_tears[0];
   float boxWidth = L/NumBoxPerDim;
@@ -327,9 +330,9 @@ __global__ void updateBoxes(float r[SIZE], int boxMembers[N],
 	  if (i<N)
 	  {
 		  int m = 3*i;
-		  r_boxIdx[i] = round(r[m]/boxWidth)) +
-		  					 numBoxes*round(r[m+1]/boxWidth))+
-		  					 	 numBoxes*numBoxes*round(r[m+2]/boxWidth));
+		  r_boxIdx[i] = round(r[m]/boxWidth) +
+		  					 numBoxes*round(r[m+1]/boxWidth)+
+		  					 	 numBoxes*numBoxes*round(r[m+2]/boxWidth);
 		  boxMembersFirstIndex[r_boxIdx[i]] += 1;
 	  }
   }
@@ -350,7 +353,7 @@ __global__ void updateBoxes(float r[SIZE], int boxMembers[N],
   {
 	  if (i<N)
 	  {
-		  boxMembers(boxPop[r_boxIdx[i]]) = i;
+		  boxMembers[boxPop[r_boxIdx[i]]] = i;
 		  boxPop[r_boxIdx[i]] += 1;
 	  }
   }
@@ -414,11 +417,11 @@ int main(void)
   // if random shit comes out, might be shared mem size
   for (int b = 0; b < 10; ++b)
   {
-    calcForces_intrabox<<<numBoxes, 32, SIZE*4*2>>>(d_F0, d_r0, d_boxMembers, d_mbfi, d_L);
+    //calcForces_intrabox<<<numBoxes, 32, SIZE*4*2>>>(d_F0, d_r0, d_boxMembers, d_mbfi, d_L);
   }
     //test_F<<<N,3>>>(d_F0);
   cudaDeviceSynchronize();
-	cudaMemcpy(vout, d_F0, SIZE*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
+	cudaMemcpy(vout, d_r0, SIZE*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
 	cudaDeviceSynchronize();
   for(int i=0; i<N;++i){
 		for(int j=0; j<3; ++j){
