@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 
-const int NumBoxPerDim = 1;
+const int NumBoxPerDim = 2;
 const int N = 864;
 const int SIZE = N*3;
 const int numBoxes = NumBoxPerDim * NumBoxPerDim * NumBoxPerDim;
@@ -315,57 +315,93 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
 
 __global__ void updateBoxes(float r[SIZE], int boxMembers[N],
  							int boxMembersFirstIndex[numBoxes+1], float L_tears[1]){
+  
+  extern __shared__ int shared2[];
 
   int N_par_thread = N/warpSize;
+  int N_par_thread_boxes = numBoxes/warpSize;
   int t = threadIdx.x;
   float L = L_tears[0];
   float boxWidth = L/NumBoxPerDim;
 
   int N_box[numBoxes];
-  int r_boxIdx[N];
-  int boxPop[numBoxes];
 
-  for (int i = t*N_par_thread; i < (t+1)*N_par_thread; ++i)
-  {
-	  if (i<N)
+  int *r_boxIdx = &shared2[0];
+  int *boxPop = &shared2[N];
+
+  for (int i = t*N_par_thread_boxes; i < (t+1)*N_par_thread; ++i)
+  {	
+	
+	  if (i<numBoxes)
 	  {
-		  int m = 3*i;
-		  r_boxIdx[i] = round(r[m]/boxWidth) +
-		  					 numBoxes*round(r[m+1]/boxWidth)+
-		  					 	 numBoxes*numBoxes*round(r[m+2]/boxWidth);
-		  boxMembersFirstIndex[r_boxIdx[i]] += 1;
+	  	boxPop[i] = 0;
 	  }
   }
   __syncthreads();
   
-  if (t==0) // Let single thread do cumsum
-  {
-  	for (int k = 0; k < numBoxes; ++k)
-  	{
-  		boxMembersFirstIndex[k+1] += boxMembersFirstIndex[k];
-  		boxPop[k] = boxMembersFirstIndex[k];
-  	}
-  }
-  __syncthreads();
-
-
   for (int i = t*N_par_thread; i < (t+1)*N_par_thread; ++i)
-  {
+  {	
+	
 	  if (i<N)
 	  {
-		  boxMembers[boxPop[r_boxIdx[i]]] = i;
-		  boxPop[r_boxIdx[i]] += 1;
+		  int m = 3*i;
+		  r_boxIdx[i] = floorf(r[m]/boxWidth) +
+		  					 NumBoxPerDim*floorf(r[m+1]/boxWidth)+
+		  					 	 NumBoxPerDim*NumBoxPerDim*floorf(r[m+2]/boxWidth);
 	  }
   }
+  
+__syncthreads();
+
+  // for (int i = t*N_par_thread; i < (t+1)*N_par_thread; ++i)
+  // {	
+	
+	 //  if (i<N)
+	 //  {
+	 //  	boxPop[r_boxIdx[i]] += 1;
+	 //  	boxMembers[i] = r_boxIdx[i];
+	 //  }
+  // }
+
+
+
+if (t==0) //SINGLE THREAD
+{	
+  	for (int i = 0; i < N; ++i) // COUNT BOX POPULATIONS
+  	{
+		boxPop[r_boxIdx[i]] += 1;
+	}
+
+  	for (int i = 0; i < numBoxes; ++i) // DO CUMSUM
+  	{	
+  		boxPop[i] -= boxPop[0];
+		boxPop[i+1] += boxPop[i];
+		
+	}
+
+  	for (int i = 0; i < N; ++i) // DO FILL IN
+  	{	
+		boxMembers[boxPop[r_boxIdx[i]]] = i;
+		boxPop[r_boxIdx[i]] += 1;
+	}
+
+	boxMembersFirstIndex[0] = 0;
+	for (int i = 0; i < numBoxes; ++i) // DO FILL IN
+  	{	
+		boxMembersFirstIndex[i+1] = boxPop[i];
+	}
+
+}
+
 }
 
 void velocity_verlet(float F[SIZE], float r[SIZE], float v[SIZE])
 {
 	vv_update_r<<< numBlocksAdd, 1>>>(F, r, v);
-  cudaDeviceSynchronize();
+  	cudaDeviceSynchronize();
 	vv_update_v<<< numBlocksAdd, 1>>>(F, r, v);
 	cudaDeviceSynchronize();
-  //calcForces
+  	calcForces
   // cudaDeviceSynchronize();
 	vv_update_v<<< numBlocksAdd, 1>>>(F, r, v);
 	cudaDeviceSynchronize();
@@ -399,35 +435,56 @@ int main(void)
   // for(int i=0; i<100;++i){
    // velocity_verlet(d_F0, d_r0, d_v0);
   // }
+  int one_to_N[N];
+	for (int i = 0; i < N; ++i)
+	{
+	  one_to_N[i] = i;
+	}
+
+  int* d_one_to_N;
+  cudaMalloc(&d_one_to_N, N*sizeof(int));
+  cudaMemcpy(d_one_to_N, one_to_N, N*sizeof(int), cudaMemcpyHostToDevice);
 
   int boxMembers[N];
-  for (int i = 0; i < N; ++i)
-  {
-    boxMembers[i] = i;
-  }
-  int mbfi[numBoxes+1] = {0,N};
-
+	for (int i = 0; i < N; ++i)
+	{
+	  boxMembers[i] = 777;
+	}
+  int mbfi[numBoxes+1];
   int* d_boxMembers;
   cudaMalloc(&d_boxMembers, N*sizeof(int));
   int* d_mbfi;
   cudaMalloc(&d_mbfi, (numBoxes+1)*sizeof(int));
+
   cudaMemcpy(d_boxMembers, boxMembers, N*sizeof(int),cudaMemcpyHostToDevice);
   cudaMemcpy(d_mbfi, mbfi, (numBoxes+1)*sizeof(int),cudaMemcpyHostToDevice);
 
+
+// updateBoxes<<<1, 32, (N+numBoxes+1)*sizeof(int) >>>(d_r0, d_boxMembers, d_mbfi, d_L);
   // if random shit comes out, might be shared mem size
-  for (int b = 0; b < 10; ++b)
+  for (int b = 0; b < 1000; ++b)
   {
+//updateBoxes<<<1, 32, (N+numBoxes+1)*sizeof(int) >>>(d_r0, d_boxMembers, d_mbfi, d_L);
+
     //calcForces_intrabox<<<numBoxes, 32, SIZE*4*2>>>(d_F0, d_r0, d_boxMembers, d_mbfi, d_L);
   }
     //test_F<<<N,3>>>(d_F0);
   cudaDeviceSynchronize();
 	cudaMemcpy(vout, d_r0, SIZE*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
+	cudaMemcpy(boxMembers, d_boxMembers, N*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
+	cudaMemcpy(mbfi, d_mbfi, (numBoxes+1)*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
+
 	cudaDeviceSynchronize();
   for(int i=0; i<N;++i){
 		for(int j=0; j<3; ++j){
 			printf("%f ",vout[3*i+j]);
+
 		}
+		printf("\t%i ",boxMembers[i]);
 		printf("\t%i\n",i);
 	}
+		for(int j=0; j<numBoxes+1; ++j){
+			printf("%i\n ",mbfi[j]);
 
+		}
 }
