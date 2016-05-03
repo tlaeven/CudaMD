@@ -63,17 +63,25 @@ void read_r(float b[SIZE])
     fclose(fp);
 }
 
-__global__ void vv_update_r(float F[SIZE], float r[SIZE], float v[SIZE])
+__global__ void vv_update_r(float F[SIZE], float r[SIZE], float v[SIZE], float L_tears[1])
 {
-    float L = 1.2;
-	int i = blockIdx.x;
+	int i = blockIdx.x + gridDim.x*threadIdx.x;
+	float L = L_tears[0];
+	if(i<SIZE){
+	if (i==0)
+	{
+		printf("r=(%f,%f,%f)\tv=(%f,%f,%f)\n", r[300],r[301],r[302],v[300],v[301],v[302]);
+	}
 	r[i] = modfloat(r[i] + h2*F[i] + h*v[i],L);
-
+	}
 }
-__global__ void vv_update_v(float F[SIZE], float r[SIZE], float v[SIZE])
+__global__ void vv_update_v(float F[SIZE], float r[SIZE], float v[SIZE], float L_tears[1])
 {
-	int i = blockIdx.x;
+	int i = blockIdx.x + gridDim.x*threadIdx.x;
+	float L = L_tears[0];
+	if(i<SIZE){
 	v[i] = v[i] + h2*F[i];
+	}
 }
 
 // RUN THIS FIRST TO CLEAR ALL PREVIOUS FORCES
@@ -233,11 +241,7 @@ __global__ void calcForces_interbox(float F[SIZE], float r[SIZE], int boxMembers
   int block_B = B_i + B_j*NumBoxPerDim + B_k*NumBoxPerDim*NumBoxPerDim;
   
   int k = threadIdx.x; // every thread does 1 particle in 
-  if (k==0)
-  {
-//printf("%i %i\n", block_A,block_B);
-  	/* code */
-  }
+
   float L = L_tears[0];
 
   int i = boxMembersFirstIndex[block_A];
@@ -269,14 +273,14 @@ __global__ void calcForces_interbox(float F[SIZE], float r[SIZE], int boxMembers
       int l = 3*t; // particle number * 3 dimensions
       for (int n = 0; n < 3; ++n){
           r_boxA[l + n] = r[3*boxMembers[i+t] + n];
-          F_boxA[l + n] = F[3*boxMembers[i+t] + n];
+          F_boxA[l + n] = 0;
       }
     }
     if (t<N_B){  
       int l = 3*t; // particle number * 3 dimensions
       for (int n = 0; n < 3; ++n){
           r_boxB[l + n] = r[3*boxMembers[j+t] + n]; 
-          F_boxB[l + n] = F[3*boxMembers[j+t] + n];
+          F_boxB[l + n] = 0;
       }
     }
   }
@@ -321,27 +325,13 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
 
       float fz = dz * forceMagnitude;
       F_boxA[l+2] += fz;
-//     	        if((boxMembers[i+t] == 216)&&(nbor_i==0)&&(nbor_j==0)&&(nbor_k==1))
-//         	{printf("\ndz = %f, fM = %f, %f %f %f\t (t,n) = (%i,%i)\n",dz, forceMagnitude, F_boxA[3*t],F_boxA[3*t+1],F_boxA[3*t+2],t,n);
-// printf("dz = %f, fM = %f, %f %f %f\t (t,n) = (%i,%i)\n",dz, forceMagnitude, F_boxB[3*t],F_boxB[3*t+1],F_boxB[3*t+2],t,n);
-//     }
-  	}
+
+    }
     }
   }
  
   __syncthreads(); // Make sure all forces have been filled
  
-if (k==0)
-{
-      // printf("%i\n", N_par_thread);
-// printf("(x,y,z)= (%i,%i,%i)\tblock %i with block %i\n",blockIdx.x,blockIdx.y,blockIdx.z, block_A, block_B);
-//printf("(%i,%i,%i)  (%i,%i,%i)\tblock %i with block %i\n",A_i,A_j,A_k,B_i,B_j,B_k, block_A, block_B);
-
-
-
-// printf("%f\n",modfloat(-1.0,4.0));
-
-}
   ///////////////
   // FOUNTAIN OF TEARS BOX B
   ///////////////
@@ -371,7 +361,6 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
 
 
       float R2 = dx*dx + dy*dy + dz*dz;
-      if(R2>(L*L/4)){printf("%f\t%f\n",R2,L*L/4);}
 
       float forceMagnitude = 48*pow(R2,-7) -24*pow(R2,-4);
       
@@ -382,7 +371,9 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
       F_boxB[l+1] += fy;
 
       float fz = dz * forceMagnitude;
-      F_boxB[l+2] += fz;}
+      F_boxB[l+2] += fz;
+
+    }
     }
   }
 
@@ -393,49 +384,22 @@ for (int t = N_par_thread*k; t < N_par_thread*(k+1); ++t)
   // REDISTRIBUTE FORCES INTO GLOBAL F
   ///////////////
 if (k==0){
-// printf("(x,y,z)= (%i,%i,%i)\tblock %i with block %i\n",blockIdx.x,blockIdx.y,blockIdx.z, block_A, block_B);
-  for(int t = 0; t < max(N_A, N_B); ++t){
+  for(int t = 0; t < max(N_A, N_B) ; ++t){
       if (t<N_A)
       {
       for (int n = 0; n < 3; ++n){
-        F[3*boxMembers[i+t] + n] = F_boxA[3*t + n];
+        F[3*boxMembers[i+t] + n] += F_boxA[3*t + n];
   }
       }
 	  if (t<N_B)
       {
       	for (int n = 0; n < 3; ++n){
-        F[3*boxMembers[j+t] + n] = F_boxB[3*t + n];
+        F[3*boxMembers[j+t] + n] += F_boxB[3*t + n];
   	}
       }
     }
 }
 
-//   if (k==0)
-// {
-//   for(int t = 0; t < N_A; ++t){
-//       if (t<N_A)
-//       {
-//       for (int n = 0; n < 3; ++n){
-//         F[3*boxMembers[i+t] + n] = F_boxA[3*t + n];
-//         __syncthreads(); 
-//       }
-//   }
-//     }
-// }
-
-// __syncthreads(); 
-//   if (k==0)
-// {
-//   for(int t = 0; t < N_B; ++t){
-//       if (t<N_B)
-//       {
-//       for (int n = 0; n < 3; ++n){
-//         F[3*boxMembers[j+t] + n] = F_boxB[3*t + n];
-//         __syncthreads(); 
-//       }
-//   }
-//     }
-// }
 }
 
 __global__ void updateBoxes(float r[SIZE], int boxMembers[N],
@@ -478,18 +442,6 @@ __global__ void updateBoxes(float r[SIZE], int boxMembers[N],
   
 __syncthreads();
 
-  // for (int i = t*N_par_thread; i < (t+1)*N_par_thread; ++i)
-  // {	
-	
-	 //  if (i<N)
-	 //  {
-	 //  	boxPop[r_boxIdx[i]] += 1;
-	 //  	boxMembers[i] = r_boxIdx[i];
-	 //  }
-  // }
-
-
-
 if (t==0) //SINGLE THREAD
 {	
   	for (int i = 0; i < N; ++i) // COUNT BOX POPULATIONS
@@ -522,15 +474,14 @@ void velocity_verlet(float F[SIZE], float r[SIZE], float v[SIZE], int boxMembers
 {	
 	dim3 grid(NumBoxPerDim,NumBoxPerDim,NumBoxPerDim);
 	dim3 halfgrid(NumBoxPerDim/2,NumBoxPerDim,NumBoxPerDim);
-	// vv_update_r<<< numBlocksAdd, 1>>>(F, r, v);
+	vv_update_r<<< SIZE/128, 192>>>(F, r, v, L);
   	cudaDeviceSynchronize();
 	updateBoxes<<<1, 192, (N+numBoxes+1)*sizeof(int) >>>(r, boxMembers, mbfi, L);
-	// cudaDeviceSynchronize();
-	// vv_update_v<<< numBlocksAdd, 1>>>(F, r, v);
+	cudaDeviceSynchronize();
+	vv_update_v<<< SIZE/128, 192>>>(F, r, v, L);
 	cudaDeviceSynchronize();
   	calcForces_intrabox<<<grid, 192, 3*(N/numBoxes+10)*4*2>>>(F, r, boxMembers, mbfi, L);
 	cudaDeviceSynchronize();
-	
 	int IdxHalfDim;
 	for (int i = -1; i < 2; ++i)
     {
@@ -555,15 +506,15 @@ void velocity_verlet(float F[SIZE], float r[SIZE], float v[SIZE], int boxMembers
 						IdxHalfDim = 2;
 						halfgrid = dim3(NumBoxPerDim,NumBoxPerDim,NumBoxPerDim/2);
 					}
-					printf("dir = (%i, %i, %i)\n", i,j,k);
+
 					calcForces_interbox<<<halfgrid, 192, 3*(N/numBoxes+10)*4*4>>>(F, r, boxMembers, mbfi, L, i, j, k, NumBoxPerDim, IdxHalfDim);
 					cudaDeviceSynchronize();
     			}
     		}
     	}
     }
-	// vv_update_v<<< numBlocksAdd, 1>>>(F, r, v);
-	// cudaDeviceSynchronize();
+	vv_update_v<<< SIZE/128, 128>>>(F, r, v, L);
+	cudaDeviceSynchronize();
   }
 
 int main(void)
@@ -618,34 +569,43 @@ int main(void)
   cudaMemcpy(d_boxMembers, boxMembers, N*sizeof(int),cudaMemcpyHostToDevice);
   cudaMemcpy(d_mbfi, mbfi, (numBoxes+1)*sizeof(int),cudaMemcpyHostToDevice);
 
+  			cudaDeviceSynchronize();
 
 // updateBoxes<<<1, 32, (N+numBoxes+1)*sizeof(int) >>>(d_r0, d_boxMembers, d_mbfi, d_L);
   // if random shit comes out, might be shared mem size
-  for (int b = 0; b < 1; ++b)
+
+  size_t mem_tot_0 = 0;
+size_t mem_free_0 = 0;
+  for (int b = 0; b < 1000; ++b)
   {
   	velocity_verlet(d_F0, d_r0, d_v0, d_boxMembers, d_mbfi, d_L);
+  	// cudaMemGetInfo  (&mem_free_0, & mem_tot_0);
+  	// printf("%i,%i\n", mem_free_0, mem_tot_0);
+  	printf("####################%i#########################\n", b);
+  			cudaDeviceSynchronize();
+
   }
     //test_F<<<N,3>>>(d_F0);
   cudaDeviceSynchronize();
-	cudaMemcpy(vout, d_F0, SIZE*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
+	cudaMemcpy(vout, d_r0, SIZE*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
 	cudaMemcpy(boxMembers, d_boxMembers, N*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
 	cudaMemcpy(mbfi, d_mbfi, (numBoxes+1)*sizeof(float), cudaMemcpyDeviceToHost); // put in F0 to check if different to F0
 
 	cudaDeviceSynchronize();
 	float sum[3] = {0,0,0};
-  for(int i=0; i<N;++i){
-		for(int j=0; j<3; ++j){
-			printf("%e ",vout[3*i+j]);
-			sum[j]+=vout[3*i+j];
+ //  for(int i=0; i<N;++i){
+	// 	for(int j=0; j<3; ++j){
+	// 		printf("%e ",vout[3*i+j]);
+	// 		sum[j]+=vout[boxMembers[i]+j];
 
-		}
-		printf("\t%i ",boxMembers[i]);
-		printf("\t%i\n",i);
-	}
-		// for(int j=0; j<numBoxes+1; ++j){
-		// 	printf("%i\n ",mbfi[j]);
+	// 	}
+	// 	printf("\t%i ",boxMembers[i]);
+	// 	printf("\t%i\n",i);
+	// }
+	// 	for(int j=0; j<numBoxes+1; ++j){
+	// 		printf("%i,\n ",mbfi[j]);
 
-		// }
+	// 	}
 		// printf("%f\t%f\t%f\t\n", sum[0],sum[1],sum[2]);
 		// printf("%f %f %f\n", r0[3*216],r0[3*216+1],r0[3*216+2]);
 		// printf("%f %f %f\n", F0[3*216],F0[3*216+1],F0[3*216+2]);
