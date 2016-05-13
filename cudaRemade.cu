@@ -1,16 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#define NUM_BOXES_DIM 8
+#define NUM_BOXES_DIM 12
 #define NUM_BOXES (NUM_BOXES_DIM*NUM_BOXES_DIM*NUM_BOXES_DIM)
-#define N 4000
+#define N 16384
 #define MAX_PARTICLES_PER_BOX (N/NUM_BOXES_DIM/NUM_BOXES_DIM/NUM_BOXES_DIM + 20)
 #define SIZE (N*3)
 #define h 0.004
 #define h2 (h/2)
 #define RHO 1.0
 
-const float L = 1.001*pow(N / RHO, 1.0 / 3.0); //slightly increased range as we were having issues with boxwidth
+const float L = pow(N / RHO, 1.0 / 3.0);
 
 void read_v(float b[SIZE]){
 	FILE *fp = fopen("v_init", "rb");
@@ -119,9 +119,9 @@ void updateBoxes(float r[SIZE], int boxMembers[N], int boxMembersFirstIndex[NUM_
 		if (i < N)
 		{
 			int m = 3 * i;
-			r_boxIdx[i] = floorf(r[m] / boxWidth) +
-				NUM_BOXES_DIM*floorf(r[m + 1] / boxWidth) +
-				NUM_BOXES_DIM*NUM_BOXES_DIM*floorf(r[m + 2] / boxWidth);
+			r_boxIdx[i] = modi(floorf(r[m] / boxWidth),NUM_BOXES_DIM) +
+				NUM_BOXES_DIM*modi(floorf(r[m + 1] / boxWidth),NUM_BOXES_DIM) +
+				NUM_BOXES_DIM*NUM_BOXES_DIM*modi(floorf(r[m + 2] / boxWidth),NUM_BOXES_DIM);
 		}
 
 	}
@@ -539,13 +539,13 @@ int main(void){
 	cudaMalloc(&d_boxMembers, N*sizeof(int));
 
 	cudaDeviceSynchronize();
-	for (int i = 0; i < 2000; ++i)
+	for (int i = 0; i < 20; ++i)
 	{
 		velocity_verlet(d_F, d_r, d_v, d_boxMembers, d_boxMembersFirstIndex, d_L);
 		printf("heen %i\n", i);
 	}
 	reverse_v << < SIZE / 128, 128 >> >(d_F, d_r, d_v, d_L);
-	for (int i = 0; i < 2000; ++i)
+	for (int i = 0; i < 20; ++i)
 	{
 		velocity_verlet(d_F, d_r, d_v, d_boxMembers, d_boxMembersFirstIndex, d_L);
 		printf("terug %i\n", i);

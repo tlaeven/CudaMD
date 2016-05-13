@@ -63,8 +63,8 @@ def InitialiseVelocities (settings):
 #####################################################################
 settings = md_settings(TSI=119.8,
                           rho=1.0,
-                          NumberOfBoxesPerDimension=12,
-                          NumberOfTimeSteps=2000,
+                          NumberOfBoxesPerDimension=16,
+                          NumberOfTimeSteps=1,
                           TruncR=3000,
                           h=0.004)
 # Initialise the system
@@ -82,5 +82,5 @@ fid_v = open('v_init','wb')
 v_init = array.array('f',(v.T).flatten())
 v_init.tofile(fid_v)
 fid_v.close()
-print(settings.L)
+#print(settings.L)
 
