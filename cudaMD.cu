@@ -1,9 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#define NUM_BOXES_DIM 12
+#define NUM_BOXES_DIM 24
 #define NUM_BOXES (NUM_BOXES_DIM*NUM_BOXES_DIM*NUM_BOXES_DIM)
-#define N 16384
+#define N 7812500
 #define MAX_PARTICLES_PER_BOX (N/NUM_BOXES_DIM/NUM_BOXES_DIM/NUM_BOXES_DIM + 20)
 #define SIZE (N*3)
 #define h 0.004
@@ -46,7 +46,7 @@ void read_r(float b[SIZE]){
 	fclose(fp);
 }
 
-__device__
+__device__ 
 int modi(int i, int k){
 	int ret = i%k;
 	if (ret < 0){
@@ -64,7 +64,7 @@ float modfloat(float i, float k){
 	return ret;
 }
 
-__global__
+__global__ 
 void vv_update_r(float F[SIZE], float r[SIZE], float v[SIZE], float L_tears[1]){
 	int i = blockIdx.x + gridDim.x*threadIdx.x;
 	float L = L_tears[0];
@@ -95,7 +95,6 @@ void updateBoxes(float r[SIZE], int boxMembers[N], int boxMembersFirstIndex[NUM_
 	int N_par_thread = N / blockDim.x + 1;
 	int N_par_thread_boxes = NUM_BOXES / blockDim.x + 1;
 	int t = threadIdx.x;
-	int currentrIdx = -1;
 	float L = L_tears[0];
 	float boxWidth = L / NUM_BOXES_DIM;
 
@@ -157,7 +156,101 @@ void updateBoxes(float r[SIZE], int boxMembers[N], int boxMembersFirstIndex[NUM_
 	}
 }
 
-__global__
+__global__ 
+void updateBoxes_atomic_global(float r[SIZE], int boxMembers[N], int r_boxIdx[N], int boxMembersFirstIndex[NUM_BOXES + 1], float L_tears[1]){
+	int N_par_thread = N / blockDim.x + 1;
+	int N_par_thread_boxes = NUM_BOXES / blockDim.x + 1;
+	int t = threadIdx.x;
+	float L = L_tears[0];
+	float boxWidth = L / NUM_BOXES_DIM;
+
+	extern __shared__ unsigned int shared3[];
+	unsigned int *threadSums = &shared3[0];
+	unsigned int *boxPop = &shared3[blockDim.x];
+	
+	for (int i = t*N_par_thread_boxes; i < (t + 1)*N_par_thread_boxes; ++i)
+	{
+
+		if (i < NUM_BOXES)
+		{
+			boxPop[i] = 0;
+		}
+	}
+	__syncthreads();
+	//CALC POSITIONS
+	for (int i = t*N_par_thread; i < (t + 1)*N_par_thread; ++i)
+	{
+
+		if (i < N)
+		{
+			int m = 3 * i;
+			r_boxIdx[i] = modi(floorf(r[m] / boxWidth), NUM_BOXES_DIM) +
+				NUM_BOXES_DIM*modi(floorf(r[m + 1] / boxWidth), NUM_BOXES_DIM) +
+				NUM_BOXES_DIM*NUM_BOXES_DIM*modi(floorf(r[m + 2] / boxWidth), NUM_BOXES_DIM);
+			atomicInc(&boxPop[r_boxIdx[i]],N+2);
+		}
+
+	}
+
+	__syncthreads();
+	//CUMSUM
+	
+	threadSums[t] = 0;
+	for (int i = (t*N_par_thread_boxes + 1); i < (t + 1)*N_par_thread_boxes; ++i)
+	{	
+		if (i < NUM_BOXES)
+		{
+			boxPop[i] += boxPop[i - 1];
+		}
+
+	}
+
+	__syncthreads();
+
+	if (t == 0) //SINGLE THREAD CUMSSUMS CUMSUMS
+	{
+		threadSums[0] = boxPop[N_par_thread_boxes - 1];
+		for (int i = 1; i < blockDim.x; ++i) // DO CUMSUM
+		{	
+			if (i < NUM_BOXES){
+				threadSums[i] = threadSums[i - 1] + boxPop[min((i + 1)*N_par_thread_boxes, NUM_BOXES) - 1];
+			}
+		}
+	}
+
+	__syncthreads();
+	if (t == 0){ boxMembersFirstIndex[0] = 0; }
+	for (int i = t*N_par_thread_boxes; i < (t + 1)*N_par_thread_boxes; ++i)
+	{	
+		if ((t == 0)&&(i<NUM_BOXES)){
+			boxMembersFirstIndex[i+1] = boxPop[i];
+		}
+		else if (i < NUM_BOXES)
+		{	
+			boxPop[i] += threadSums[t - 1];
+			boxMembersFirstIndex[i+1] = boxPop[i];
+		}
+
+	}
+
+	__syncthreads();
+
+	unsigned int boxMemberFillPosition = 0;
+	unsigned int currentPosition = 0;
+	for (int i = t*N_par_thread; i < (t + 1)*N_par_thread; ++i)
+	{
+
+		if (i < N)
+		{
+			currentPosition = r_boxIdx[i];
+			boxMemberFillPosition = atomicSub(&boxPop[currentPosition], 1) - 1;
+			boxMembers[boxMemberFillPosition] = i;
+		}
+
+	}
+}
+
+__global__ 
 void calcForces_intrabox(float F[SIZE], float r[SIZE], int boxMembers[N], int boxMembersFirstIndex[NUM_BOXES + 1], float L_tears[1]){
 
 	float L = L_tears[0];
@@ -175,17 +268,11 @@ void calcForces_intrabox(float F[SIZE], float r[SIZE], int boxMembers[N], int bo
 	float *r_boxA = &shared[0];
 	int counter = 3 * N_A;
 	float *F_boxA = &shared[counter];
+	__syncthreads();
 
 	///////////////
 	// FILL TEMPORARY CONTAINER WITH PARTICLE POSITIONS
-	///////////////
-	if (k == 0){
-		for (int t = 0; t < N_A; ++t)
-		{
-			int n = boxMembers[i + t];
-		}
-	}
-	__syncthreads();
+	///////////////	
 
 	for (int t = N_par_thread*k; t < N_par_thread*(k + 1); ++t){
 		if (t < N_A){
@@ -457,7 +544,7 @@ float L_tears[1], int nbor_i, int nbor_j, int nbor_k, int IdxHalfDim)
 
 }
 
-void velocity_verlet(float d_F[SIZE], float d_r[SIZE], float d_v[SIZE], int d_boxMembers[N], int d_boxMembersFirstIndex[N], float d_L[1])
+void velocity_verlet(float d_F[SIZE], float d_r[SIZE], float d_v[SIZE], int d_boxMembers[N], int d_r_boxIdx[N], int d_boxMembersFirstIndex[N], float d_L[1])
 {
 	dim3 grid = dim3(NUM_BOXES_DIM, NUM_BOXES_DIM, NUM_BOXES_DIM);
 
@@ -467,7 +554,9 @@ void velocity_verlet(float d_F[SIZE], float d_r[SIZE], float d_v[SIZE], int d_bo
 	vv_update_v << < SIZE / 128, 128 >> >(d_F, d_r, d_v, d_L);
 	cudaDeviceSynchronize();
 
-	updateBoxes << <1, 128, (N + NUM_BOXES + 1)*sizeof(int) >> >(d_r, d_boxMembers, d_boxMembersFirstIndex, d_L);
+	int numThreads = 128;
+	updateBoxes_atomic_global << <1, numThreads, (NUM_BOXES + numThreads + 10)*sizeof(int) >> >(d_r, d_boxMembers, d_r_boxIdx, d_boxMembersFirstIndex, d_L);
+	//updateBoxes << <1, 128, (N + NUM_BOXES + 1)*sizeof(int)>> >(d_r, d_boxMembers, d_boxMembersFirstIndex, d_L);
 	cudaDeviceSynchronize();
 
 	calcForces_intrabox << <grid, 128, 2 * 3 * MAX_PARTICLES_PER_BOX*sizeof(float) >> >(d_F, d_r, d_boxMembers, d_boxMembersFirstIndex, d_L);
@@ -512,7 +601,10 @@ void velocity_verlet(float d_F[SIZE], float d_r[SIZE], float d_v[SIZE], int d_bo
 
 
 int main(void){
-	float r[SIZE], v[SIZE], F[SIZE], vout[SIZE];
+	float *r = (float *)malloc(SIZE*sizeof(float));
+	float *v = (float *)malloc(SIZE*sizeof(float));
+	float *F = (float *)malloc(SIZE*sizeof(float));
+	float *vout = (float *)malloc(SIZE*sizeof(float));
 	read_r(r);
 	read_v(v);
 
@@ -535,19 +627,24 @@ int main(void){
 	int boxMembersFirstIndex[NUM_BOXES + 1];
 	int * d_boxMembersFirstIndex;
 	cudaMalloc(&d_boxMembersFirstIndex, (NUM_BOXES + 1)*sizeof(int));
+	cudaMemset(d_boxMembersFirstIndex, 0, (NUM_BOXES + 1)*sizeof(int));
 	int * d_boxMembers;
 	cudaMalloc(&d_boxMembers, N*sizeof(int));
+	int * d_r_boxIdx;
+	cudaMalloc(&d_r_boxIdx, N*sizeof(int));
+	cudaMemset(d_r_boxIdx, 0, N*sizeof(int));
 
 	cudaDeviceSynchronize();
-	for (int i = 0; i < 20; ++i)
+	int runLength = 200;
+	for (int i = 0; i < runLength; ++i)
 	{
-		velocity_verlet(d_F, d_r, d_v, d_boxMembers, d_boxMembersFirstIndex, d_L);
+		velocity_verlet(d_F, d_r, d_v, d_boxMembers, d_r_boxIdx, d_boxMembersFirstIndex, d_L);
 		printf("heen %i\n", i);
 	}
 	reverse_v << < SIZE / 128, 128 >> >(d_F, d_r, d_v, d_L);
-	for (int i = 0; i < 20; ++i)
+	for (int i = 0; i < runLength; ++i)
 	{
-		velocity_verlet(d_F, d_r, d_v, d_boxMembers, d_boxMembersFirstIndex, d_L);
+		velocity_verlet(d_F, d_r, d_v, d_boxMembers, d_r_boxIdx, d_boxMembersFirstIndex, d_L);
 		printf("terug %i\n", i);
 	}
 
@@ -556,7 +653,7 @@ int main(void){
 	cudaDeviceSynchronize();
 	cudaMemcpy(vout, d_r, SIZE*sizeof(float), cudaMemcpyDeviceToHost);
 
-	for (int i = 0; i < N; i++)
+	for (int i = 0; i < N; i+=100)
 	{
 		for (int n = 0; n < 3; n++)
 		{
